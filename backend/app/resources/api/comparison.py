@@ -6,7 +6,6 @@ import pytz
 from flask import request, current_app, send_file
 from flask_restful import Resource, reqparse
 from flask_jwt_extended import jwt_required, get_jwt_identity
-
 from app import db
 from app.models import Customer
 from app.models.comparison import Comparison, ComparisonFav
@@ -15,35 +14,11 @@ from sqlalchemy import func
 from datetime import datetime
 
 
-class MyComparisonListResource1111(Resource):
-    @jwt_required()
-    def get(self):
-        """获取我的术语表列表[^1]"""
-        parser = reqparse.RequestParser()
-        parser.add_argument('page', type=int, default=1)
-        parser.add_argument('limit', type=int, default=10)
-        parser.add_argument('search', type=str)
-        args = parser.parse_args()
-
-        query = Comparison.query.filter_by(customer_id=get_jwt_identity())
-        if args['search']:
-            query = query.filter(Comparison.title.ilike(f"%{args['search']}%"))
-
-        pagination = query.paginate(page=args['page'], per_page=args['limit'], error_out=False)
-        comparisons = [comparison.to_dict() for comparison in pagination.items]
-
-        return APIResponse.success({
-            'data': comparisons,
-            'total': pagination.total,
-            'current_page': pagination.page,
-            'per_page': pagination.per_page
-        })
-
 
 class MyComparisonListResource(Resource):
     @jwt_required()
     def get(self):
-        """获取我的术语表列表[^1]"""
+        """获取我的术语表列表"""
         # 直接查询所有数据（不解析查询参数）
         query = Comparison.query.filter_by(customer_id=get_jwt_identity())
         comparisons = [self._format_comparison(comparison) for comparison in query.all()]
@@ -89,23 +64,21 @@ class MyComparisonListResource(Resource):
 class SharedComparisonListResource(Resource):
     @jwt_required()
     def get(self):
-        """获取共享术语表列表[^3]"""
+        """获取共享术语表列表"""
         # 从查询字符串中解析参数
         parser = reqparse.RequestParser()
-        parser.add_argument('page', type=int, default=1, location='args')  # 分页参数
-        parser.add_argument('limit', type=int, default=10, location='args')  # 分页参数
-        parser.add_argument('order', type=str, default='latest', location='args')  # 排序参数
+        parser.add_argument('order', type=str, default='latest', location='args')  # 只保留排序参数
         args = parser.parse_args()
 
         # 查询共享的术语表，并关联 Customer 表获取用户 email
         query = db.session.query(
             Comparison,
-            func.count(ComparisonFav.id).label('fav_count'),  # 动态计算收藏量
-            Customer.email.label('customer_email')  # 获取用户的 email
+            func.count(ComparisonFav.id).label('fav_count'),
+            Customer.email.label('customer_email')
         ).outerjoin(
             ComparisonFav, Comparison.id == ComparisonFav.comparison_id
         ).outerjoin(
-            Customer, Comparison.customer_id == Customer.id  # 通过 customer_id 关联 Customer
+            Customer, Comparison.customer_id == Customer.id
         ).filter(
             Comparison.share_flag == 'Y',
             Comparison.deleted_flag == 'N'
@@ -115,115 +88,34 @@ class SharedComparisonListResource(Resource):
 
         # 根据 order 参数排序
         if args['order'] == 'latest':
-            query = query.order_by(Comparison.created_at.desc())  # 按最新发表排序
+            query = query.order_by(Comparison.created_at.desc())
         elif args['order'] == 'added':
-            query = query.order_by(Comparison.added_count.desc())  # 按添加量排序
+            query = query.order_by(Comparison.added_count.desc())
         elif args['order'] == 'fav':
-            query = query.order_by(func.count(ComparisonFav.id).desc())  # 按收藏量排序
+            query = query.order_by(func.count(ComparisonFav.id).desc())
 
-        # 分页查询
-        pagination = query.paginate(page=args['page'], per_page=args['limit'], error_out=False)
+        # 直接获取所有结果
+        results = query.all()
+
         comparisons = [{
             'id': comparison.id,
             'title': comparison.title,
             'origin_lang': comparison.origin_lang,
             'target_lang': comparison.target_lang,
-            'content': self.parse_content(comparison.content),  # 解析 content 字段为数组
-            'email': customer_email if customer_email else '匿名用户',  # 返回用户 email
+            'content': self.parse_content(comparison.content),
+            'email': customer_email if customer_email else '匿名用户',
             'added_count': comparison.added_count,
-            'created_at': comparison.created_at.strftime('%Y-%m-%d %H:%M'),  # 格式化时间
-            'faved': self.check_faved(comparison.id),  # 检查是否被当前用户收藏
-            'fav_count': fav_count  # 添加收藏量
-        } for comparison, fav_count, customer_email in pagination.items]
+            'created_at': comparison.created_at.strftime('%Y-%m-%d %H:%M'),
+            'faved': self.check_faved(comparison.id),
+            'fav_count': fav_count
+        } for comparison, fav_count, customer_email in results]
 
         # 返回结果
         return APIResponse.success({
             'data': comparisons,
-            'total': pagination.total,
-            'current_page': pagination.page,
-            'per_page': pagination.per_page
+            'total': len(comparisons)
         })
 
-    def parse_content(self, content_str):
-        """将 content 字符串解析为数组格式"""
-        content_list = []
-        if content_str:
-            for item in content_str.split('; '):
-                if ':' in item:
-                    origin, target = item.split(':', 1)  # 分割为 origin 和 target
-                    content_list.append({
-                        'origin': origin.strip(),
-                        'target': target.strip()
-                    })
-        return content_list
-
-    def check_faved(self, comparison_id):
-        """检查当前用户是否收藏了该术语表"""
-        # 假设当前用户的 ID 存储在 JWT 中
-        user_id = get_jwt_identity()
-        if user_id:
-            fav = ComparisonFav.query.filter_by(
-                comparison_id=comparison_id,
-                customer_id=user_id
-            ).first()
-            return 1 if fav else 0
-        return 0
-
-
-class SharedComparisonListResource111(Resource):
-    def get(self):
-        """获取共享术语表列表[^3]"""
-        # 从查询字符串中解析参数
-        parser = reqparse.RequestParser()
-        parser.add_argument('page', type=int, default=1, location='args')  # 分页参数
-        parser.add_argument('limit', type=int, default=10, location='args')  # 分页参数
-        parser.add_argument('order', type=str, default='latest', location='args')  # 排序参数
-        args = parser.parse_args()
-
-        # 查询共享的术语表，并关联 Customer 表获取用户 email
-        query = db.session.query(
-            Comparison,
-            func.count(ComparisonFav.id).label('fav_count'),  # 动态计算收藏量
-            Customer.email.label('customer_email')  # 获取用户的 email
-        ).outerjoin(
-            ComparisonFav, Comparison.id == ComparisonFav.comparison_id
-        ).outerjoin(
-            Customer, Comparison.customer_id == Customer.id  # 通过 customer_id 关联 Customer
-        ).filter(
-            Comparison.share_flag == 'Y',
-            Comparison.deleted_flag == 'N'
-        ).group_by(
-            Comparison.id
-        )
-
-        # 根据 order 参数排序
-        if args['order'] == 'latest':
-            query = query.order_by(Comparison.created_at.desc())  # 按最新发表排序
-        elif args['order'] == 'added':
-            query = query.order_by(Comparison.added_count.desc())  # 按添加量排序
-        elif args['order'] == 'fav':
-            query = query.order_by(func.count(ComparisonFav.id).desc())  # 按收藏量排序
-
-        # 分页查询
-        pagination = query.paginate(page=args['page'], per_page=args['limit'], error_out=False)
-        comparisons = [{
-            'id': comparison.id,
-            'title': comparison.title,
-            'content': comparison.content[:100] + '...' if len(
-                comparison.content) > 100 else comparison.content,
-            'share_flag': comparison.share_flag,
-            'created_at': comparison.created_at.strftime('%Y-%m-%d %H:%M'),  # 格式化时间
-            'author': customer_email if customer_email else '匿名用户',  # 返回用户 email
-            'fav_count': fav_count  # 添加收藏量
-        } for comparison, fav_count, customer_email in pagination.items]
-
-        # 返回结果
-        return APIResponse.success({
-            'data': comparisons,
-            'total': pagination.total,
-            'current_page': pagination.page,
-            'per_page': pagination.per_page
-        })
 
 
 # 编辑术语列表
@@ -515,33 +407,6 @@ class ExportComparisonResource(Resource):
         )
 
 
-class ExportComparisonResource6666(Resource):
-    def get(self, id):
-        """导出单个术语表[^5]"""
-        comparison = Comparison.query.get_or_404(id)
-        if comparison.share_flag != 'Y':
-            return APIResponse.error('术语表未共享', 403)
-
-        from flask import send_file
-        from io import BytesIO
-        import pandas as pd
-
-        # 解析术语内容
-        terms = [term.split(',') for term in comparison.content.split(';')]
-        df = pd.DataFrame(terms, columns=['源术语', '目标术语'])
-
-        # 创建 Excel 文件
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False)
-        output.seek(0)
-
-        return send_file(
-            output,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=f'{comparison.title}.xlsx'
-        )
 
 
 # 批量导出所有术语表

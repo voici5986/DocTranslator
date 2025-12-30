@@ -14,7 +14,7 @@ from app.utils.response import APIResponse
 class MyPromptListResource(Resource):
     @jwt_required()
     def get(self):
-        """获取我的提示语列表[^1]"""
+        """获取我的提示语列表"""
         # 直接查询所有数据（不解析查询参数）
         query = Prompt.query.filter_by(customer_id=get_jwt_identity(), deleted_flag='N')
         prompts = [{
@@ -35,11 +35,9 @@ class MyPromptListResource(Resource):
 # 获取共享提示语列表
 class SharedPromptListResource(Resource):
     def get(self):
-        """获取共享提示语列表[^4]"""
+        """获取共享提示语列表"""
         # 从查询字符串中解析参数
         parser = reqparse.RequestParser()
-        parser.add_argument('page', type=int, default=1, location='args')  # 分页参数
-        parser.add_argument('limit', type=int, default=10, location='args')  # 分页参数
         parser.add_argument('porder', type=str, default='latest', location='args')  # 排序参数
         args = parser.parse_args()
 
@@ -67,8 +65,9 @@ class SharedPromptListResource(Resource):
         elif args['porder'] == 'fav':
             query = query.order_by(func.count(PromptFav.id).desc())  # 按收藏量排序
 
-        # 分页查询
-        pagination = query.paginate(page=args['page'], per_page=args['limit'], error_out=False)
+        # 直接获取所有结果
+        results = query.all()
+
         prompts = [{
             'id': prompt.id,
             'title': prompt.title,
@@ -77,16 +76,14 @@ class SharedPromptListResource(Resource):
             'share_flag': prompt.share_flag,
             'added_count': prompt.added_count,
             'created_at': prompt.created_at.strftime('%Y-%m-%d') if prompt.created_at else None,
-            # 处理 None 值
             'updated_at': prompt.updated_at.strftime('%Y-%m-%d') if prompt.updated_at else None,
-            # 处理 None 值
             'fav_count': fav_count
-        } for prompt, fav_count, customer_email in pagination.items]
+        } for prompt, fav_count, customer_email in results]
 
         # 返回结果
         return APIResponse.success({
             'data': prompts,
-            'total': pagination.total
+            'total': len(prompts)
         })
 
 
@@ -94,7 +91,7 @@ class SharedPromptListResource(Resource):
 class EditPromptResource(Resource):
     @jwt_required()
     def post(self, id):
-        """修改提示语内容[^3]"""
+        """修改提示语内容"""
         prompt = Prompt.query.filter_by(
             id=id,
             customer_id=get_jwt_identity(),
@@ -121,7 +118,7 @@ class SharePromptResource(Resource):
     @jwt_required()
     def post(self, id):
         """
-        修改共享状态[^4]
+        修改共享状态
         :param id: prompt 的 ID（路径参数）
         """
         # 根据 id 和当前用户查询 prompt
@@ -132,7 +129,7 @@ class SharePromptResource(Resource):
         ).first_or_404()
 
         # 从请求体中获取 share_flag
-        data = request.form  # 或者 request.form 如果是表单数据
+        data = request.form
         if not data or 'share_flag' not in data or data['share_flag'] not in ['Y', 'N']:
             return APIResponse.error('无效的共享状态参数', 400)
 
@@ -147,7 +144,7 @@ class SharePromptResource(Resource):
 class CopyPromptResource(Resource):
     @jwt_required()
     def post(self, id):
-        """复制到我的提示语库[^5]"""
+        """复制到我的提示语库"""
         original = Prompt.query.filter_by(
             id=id,
             share_flag='Y',
@@ -161,9 +158,6 @@ class CopyPromptResource(Resource):
             share_flag='N',
             added_count=0
         )
-        print('打印原始内容长度', len(original.content))  # 打印原始内容长度
-        print('打印新内容长度', len(new_prompt.content))  # 打印新内容长度
-
         db.session.add(new_prompt)
         db.session.commit()
         return APIResponse.success({
@@ -176,7 +170,7 @@ class CopyPromptResource(Resource):
 class FavoritePromptResource(Resource):
     @jwt_required()
     def post(self, id):
-        """收藏/取消收藏[^6]"""
+        """收藏/取消收藏"""
         prompt = Prompt.query.get_or_404(id)
         customer_id = get_jwt_identity()
 
@@ -206,7 +200,7 @@ class FavoritePromptResource(Resource):
 class CreatePromptResource(Resource):
     @jwt_required()
     def post(self):
-        """创建新提示语[^7]"""
+        """创建新提示语"""
         data = request.form
         required_fields = ['title', 'content']
         if not all(field in data for field in required_fields):
@@ -223,7 +217,7 @@ class CreatePromptResource(Resource):
             content=data['content'],
             customer_id=get_jwt_identity(),
             share_flag=data.get('share_flag', 'N'),
-            created_at=date.today()  # 自动设置当前时间
+            created_at=date.today()
         )
         db.session.add(prompt)
         db.session.commit()
@@ -237,7 +231,7 @@ class CreatePromptResource(Resource):
 class DeletePromptResource(Resource):
     @jwt_required()
     def delete(self, id):
-        """删除提示语[^8]"""
+        """删除提示语"""
         prompt = Prompt.query.filter_by(
             id=id,
             customer_id=get_jwt_identity()
